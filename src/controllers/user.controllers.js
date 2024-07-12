@@ -1,10 +1,28 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
-import {User} from "../models/user.models.js";
+import { User } from "../models/user.models.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 
 
+const generateAccessAndRefereshTokens = async (userId) => {
+    try {
+        const user = await User.findById(userId)
+        const accessToken = user.generateAccessToken()
+        const refreshToken = user.generateRefreshToken();
 
-const registerUser = asyncHandler( async(req, res) => {
+        user.refreshToken = refreshToken
+        user.save({ validateBeforeSave: false });
+
+        return { accessToken, refreshToken };
+
+    } catch (err) {
+        console.log(err);
+        throw new Error(500, "Something went wrong While Generating Access and Refresh Token")
+    }
+}
+
+
+
+const registerUser = asyncHandler(async (req, res) => {
     // get user details from frontend
     //validation check
     // check if user already exists username , email
@@ -15,8 +33,7 @@ const registerUser = asyncHandler( async(req, res) => {
     //check for user creation
     //return 
 
-    const { fullname, email, username, password, role } = req.body;
-    console.log("Request Body: ", req.body);
+    const { fullname, email, username, password, } = req.body;
     console.log("Files: ", req.files);
 
     if (
@@ -34,7 +51,7 @@ const registerUser = asyncHandler( async(req, res) => {
     }
     const avatarLocalPath = req.files?.avatar?.[0]?.path;
     const coverImagePath = req.files?.coverImage?.[0]?.path;
-    if(!avatarLocalPath){
+    if (!avatarLocalPath) {
         throw new Error(400, "avater file is required")
     }
 
@@ -45,18 +62,89 @@ const registerUser = asyncHandler( async(req, res) => {
         email,
         password,
         username: username.toLowerCase(),
-        role: role || 'user'
+        //: role || 'user'
     })
     const createUser = await User.findById(user._id).select(
         "-password -refreshToken"
     )
-    if(!createUser){
+    if (!createUser) {
         throw new Error(500, "Something went wrong")
-    } 
+    }
     return res.status(201).json(
-       new ApiResponse(200, createUser, "success")
+        new ApiResponse(200, createUser, "success")
     )
     // return res.status(201).json({ success: true, data: createUser });  
 });
 
-export {registerUser} 
+const loginUser = asyncHandler(async (req, res) => {
+    const { email, username, password, } = req.body
+    console.log(req.body)
+    if (!email && !username) {
+        throw new Error(400, " username or email is required")
+    }
+
+    const user = await User.findOne({
+        $or: [{ username }, { email }]
+    })
+    if (!user) { throw new Error(400, "User does not exist") }
+
+    const isPasswordValid = await user.isPasswordCorrect(password)
+
+    if (!isPasswordValid) { throw new Error(401, "Invalid password") }
+
+    const { accessToken, refreshToken } = await generateAccessAndRefereshTokens(user._id)
+
+    const loggedInUser = await User.findById(user._id).select("-password -refreshtoken")
+
+    const options = {
+        httpOnly: true,
+        secure: true,
+    }
+
+    return res
+        .status(200)
+        .cookie("accessToken", accessToken, options)
+        .cookie("refreshToken", refreshToken, options)
+        .json(
+            new ApiResponse(
+                200,
+                {
+                    user: loggedInUser, accessToken, refreshToken
+                },
+                "user Login successful"
+            )
+        )
+
+});
+
+const logoutUser = asyncHandler(async (req, res) => {
+    await User.findByIdAndUpdate(
+        req.user._id, {
+        $set: {
+            refreshToken: undefined,
+        }
+    }, {
+        new: true
+    }
+    )
+    const options = {
+        httpOnly: true,
+        secure: true,
+    }
+
+    return res
+        .status(200)
+        .clearCookie("accessToken", options)
+        .clearCookie("refreshToken", options)
+        // .clearCookie("accessToken, options")
+        // .clearCookie("refreshToken, options")
+        .json(new ApiResponse(200, {}, "User Logged Out"))
+})
+
+
+
+export {
+    registerUser,
+    loginUser,
+    logoutUser
+}; 
